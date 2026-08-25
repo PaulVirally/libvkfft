@@ -12,14 +12,17 @@ generic for all backends, and thus `include/vkfft_wrapper.h` and
 `src/vkfft_wrapper.cpp` are compiled three times with different `VKFFT_BACKEND`
 values. Every build exports the same six symbols with the same signatures:
 
-```
-vkfft_create   vkfft_execute   vkfft_destroy   vkfft_error_name   vkfft_max_dims   vkfft_backend
-```
+- `vkfft_create`: create a plan
+- `vkfft_execute`: execute a plan
+- `vkfft_destroy`: destroy a plan
+- `vkfft_error_name`: get a string for an error code
+- `vkfft_max_dims`: get the maximum number of FFT dimensions (set to 12 by default)
+- `vkfft_backend`: get the backend the library was built for (1=CUDA, 3=OpenCL, 5=Metal)
 
 ## Vendored VkFFT
 
-`lib/VkFFT` is VkFFT **v1.3.4**, the latest release tag as of August 2026 (commit
-`066a17c17068c0f11c9298d848c2976c71fad1c1`).
+`lib/VkFFT` is VkFFT v1.3.4, the latest release tag as of August 2026 ([commit
+`066a17c17068c0f11c9298d848c2976c71fad1c1`](https://github.com/DTolm/VkFFT/tree/066a17c17068c0f11c9298d848c2976c71fad1c1)).
 
 All builds use `VKFFT_MAX_FFT_DIMENSIONS=12`. Callers should read
 `vkfft_max_dims()` instead of assuming 12 in case we change this in the future
