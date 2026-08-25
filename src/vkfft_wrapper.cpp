@@ -185,8 +185,15 @@ int vkfft_execute(vkfft_app* const self, void* const in, void* const out, const 
         return VKFFT_ERROR_INVALID_QUEUE;
     }
     MTL::CommandBuffer* const command_buffer = static_cast<stream_handle>(stream);
+    // computeCommandEncoder hands back an autoreleased object, so the wrapper
+    // does not own it and must not release it. A pool of our own keeps the
+    // lifetime self-contained: the encoder is reclaimed here whether or not
+    // the calling thread has a pool, and nothing is released twice when an
+    // outer pool drains later.
+    NS::AutoreleasePool* const pool = NS::AutoreleasePool::alloc()->init();
     MTL::ComputeCommandEncoder* const encoder = command_buffer->computeCommandEncoder();
     if (encoder == nullptr) {
+        pool->release();
         return VKFFT_ERROR_FAILED_TO_CREATE_COMMAND_LIST;
     }
     params.commandBuffer = command_buffer;
@@ -196,8 +203,10 @@ int vkfft_execute(vkfft_app* const self, void* const in, void* const out, const 
     const VkFFTResult res = VkFFTAppend(&self->app, direction, &params);
 
 #if (VKFFT_BACKEND == 5)
-    encoder->endEncoding(); // the caller commits the command buffer
-    encoder->release();
+    // Ended even when the append failed, since a command buffer with an open
+    // encoder cannot be committed. The caller commits.
+    encoder->endEncoding();
+    pool->release();
 #endif
 
     return static_cast<int>(res);

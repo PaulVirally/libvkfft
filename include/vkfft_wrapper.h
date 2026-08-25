@@ -74,6 +74,14 @@ typedef struct {
 // The OpenCL command queue given here is only a default. vkfft_execute
 // overrides it per call. On Metal the two entries are the device and queue
 // objects themselves, not pointers to them.
+//
+// Metal callers have two extra obligations here. VkFFT builds its lookup and
+// Bluestein tables during this call by submitting to the queue and waiting for
+// it, so vkfft_create synchronizes and the queue has to be able to run work.
+// And VkFFT's Metal plan builder over-releases the strings it compiles kernels
+// from, so this call must not run inside an autorelease pool that is drained
+// afterwards. Drain any pool the thread holds before calling, or call from a
+// thread that has none. vkfft_execute has no such restriction.
 int vkfft_create(const vkfft_config* config, void** device_handles, vkfft_app** out);
 
 // Runs one transform. Buffer handles and the stream/queue are set on every
@@ -91,6 +99,21 @@ int vkfft_create(const vkfft_config* config, void** device_handles, vkfft_app** 
 //           encoder on it but never commits, so the caller controls submission.
 // `direction` is forwarded to VkFFTAppend unchanged: -1 (or 0) forward, 1
 // inverse.
+//
+// The Metal call sequence is: the caller makes a command buffer from its queue,
+// calls vkfft_execute once or several times on that one command buffer, then
+// commits and waits. Each call opens its own compute encoder, appends every
+// dispatch of the transform to it, and ends it, so the encoders run in
+// submission order and consecutive transforms see each other's results. The
+// encoder belongs to the wrapper and is gone when the call returns. The command
+// buffer belongs to the caller: it comes back autoreleased from the queue, so
+// the caller must hold an autorelease pool rather than release it by hand.
+//
+// A buffer crosses as the whole MTLBuffer, and the launch parameters carry no
+// offset the wrapper can set, so `in` and `out` must be buffers whose first
+// element is the first element of the transform. An array that is a view at a
+// nonzero offset into its buffer has to be rejected or copied by the caller,
+// exactly as on OpenCL.
 //
 // For an in-place plan VkFFT works out of a single buffer: `out` is used and
 // `in` is ignored, so callers should pass the same handle twice.

@@ -53,12 +53,21 @@ compares them against a naive double-precision DFT computed on the host: a 1D
 c2c of length 64, then a table of r2c cases covering both directions in 1D and
 2D, even and odd real axes, batches, an omitted axis, and a forward-only plan.
 Both directions are checked in-place and out-of-place, with every out-of-place
-destination poisoned first so a transform that writes nothing cannot pass. It is
-built automatically for the OpenCL backend and registered with ctest:
+destination poisoned first so a transform that writes nothing cannot pass.
+
+`test/quick_test_metal.cpp` is the Metal counterpart, written against metal-cpp:
+c2c in 1D, 2D and batched, sizes large enough to need several shared-memory
+uploads per axis, a prime size that goes through Bluestein, out-of-place r2c
+round trips with an even and an odd real axis, plan reuse across command buffers
+and inside one command buffer, and a stress loop that watches the process
+footprint across thousands of executes so that an encoder leaked or released
+twice shows up.
+
+One test is built per backend and registered with ctest:
 
 ```sh
 cd build && ctest --output-on-failure
-# or just: ./vkfft_quick_test
+# or just: ./vkfft_quick_test, ./vkfft_quick_test_metal
 ```
 
 ## `device_handles`
@@ -76,6 +85,18 @@ For CUDA and OpenCL the entries are pointers to handles, which is what VkFFT
 itself wants. For Metal they are the objects. The wrapper copies each value into
 storage it owns, so the caller's variables may go out of scope right after the
 call.
+
+Metal adds two obligations to `vkfft_create`. It submits to the queue and waits
+while it builds its tables, so it is a synchronizing call. And VkFFT's Metal plan
+builder over-releases the strings it compiles kernels from, so it must not run
+inside an autorelease pool that is drained afterwards: drain any pool the thread
+holds first, or call from a thread that has none. `vkfft_execute` is unaffected.
+Upstream is aware (the string over-releases are among the fixes in
+[DTolm/VkFFT#227](https://github.com/DTolm/VkFFT/pull/227), unmerged as of
+August 2026). If the vendored VkFFT is ever bumped past that fix, the obligation
+inverts: creates stop crashing under a pool but leak their strings without one,
+so this wrapper should then open a pool around `vkfft_create` as it already does
+around `vkfft_execute`.
 
 The OpenCL command queue passed here is only a default. `vkfft_execute` takes
 the queue to submit on as its `stream` argument and overrides it on every call,
@@ -99,7 +120,16 @@ wrapper supplies the address of its own slot.
 
 On Metal the wrapper opens a compute encoder on the command buffer you give it,
 appends the FFT, and ends the encoding. It never commits so that submission and
-synchronization are the responsibility of the caller.
+synchronization are the responsibility of the caller. Several calls may share one
+command buffer before a single commit, and the encoders run in the order they
+were made. The encoder is the wrapper's, reclaimed by an autorelease pool the
+call owns, so it is gone by the time the call returns. The command buffer is
+yours and comes back from the queue autoreleased, so hold a pool rather than
+release it by hand.
+
+There is no offset in the Metal launch parameters, so `in` and `out` have to be
+buffers whose first element is the first element of the transform, the same
+restriction OpenCL has.
 
 `direction` is the same as `VkFFTAppend`: `-1` forward, `1` inverse. The forward
 transform uses the `exp(-2*pi*i*k*n/N)` convention, and the inverse is
