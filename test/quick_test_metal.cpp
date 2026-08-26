@@ -740,6 +740,7 @@ int main(void) {
         fprintf(stderr, "[FAIL] this test needs the Metal build (VKFFT_BACKEND=5)\n");
         return 1;
     }
+    report("vkfft_config_size matches this mirror", (vkfft_config_size() == sizeof(vkfft_config)) ? 0.0 : 1.0, 0.0);
 
     MTL::Device* const device = MTL::CreateSystemDefaultDevice();
     if (device == nullptr) {

@@ -23,9 +23,15 @@
 #endif
 
 // Returned when the wrapper rejects an argument before VkFFT ever sees it (null
-// pointer, or a precision outside 0..3). Every other code is a VkFFTResult
-// passed through unchanged.
+// pointer, a precision outside 0..3, a kernel set on a plan that does no
+// convolution, or a binary blob shorter than its own header says). Every code
+// other than the two below is a VkFFTResult passed through unchanged.
 #define VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT (-1)
+
+// Returned when the request is well formed but the backend this library was
+// built for cannot do it at all. The only such case is kernel binary
+// save/load on Metal, which VkFFT compiles out.
+#define VKFFT_WRAPPER_ERROR_UNSUPPORTED (-2)
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,7 +62,125 @@ typedef struct {
     uint64_t coalesced_memory;                        // tuning, in bytes, 0 = auto
     uint64_t aim_threads;                             // tuning, threads per block, 0 = auto
     uint64_t num_shared_banks;                        // tuning, 0 = auto
+    // The struct only ever grows at this end, so a caller's mirror keeps every
+    // offset above valid. A mirror that stops short of the fields below is
+    // still smaller than what the wrapper reads, so it has to cover all of
+    // them.
+    uint64_t coordinate_features;                     // VkFFT coordinateFeatures, 0 leaves VkFFT's default of 1
+    uint64_t number_kernels;                          // VkFFT numberKernels, 0 leaves VkFFT's default of 1
+    int perform_convolution;                          // VkFFT performConvolution, 1 = fft, multiply, inverse in one plan
+    int kernel_convolution;                           // VkFFT kernelConvolution, 1 = this plan only transforms a kernel
+    int conjugate_convolution;                        // VkFFT conjugateConvolution, 1 = conjugate the transformed input
+    int save_to_string;                               // VkFFT saveApplicationToString, 1 = keep the compiled binaries for vkfft_save
 } vkfft_config;
+
+// Fused convolution needs two applications, and the caller builds both.
+//
+// The first has kernel_convolution = 1 and performs an ordinary forward
+// transform of the kernel, in whatever layout the second one will read. It
+// exists as its own plan because VkFFT disables a few internal reorderings for
+// it so that its output matches what the convolution step expects. Run it once
+// with vkfft_execute in the forward direction and keep the buffer it wrote.
+//
+// The second has perform_convolution = 1 and every layout field identical to
+// the first, and it is pointed at that buffer with vkfft_set_kernel. Executing
+// it in the forward direction runs the whole pipeline: forward transform of the
+// input, elementwise multiply against the kernel, inverse transform back. The
+// inverse half of a convolution plan always applies its own 1/N, whatever
+// `normalize` says, so the result is the plain circular convolution.
+//
+// conjugate_convolution = 1 conjugates the transformed input before the
+// multiply, which turns the pipeline into a circular cross-correlation:
+// out[m] = sum_n conj(in[n]) * kernel[n + m]. VkFFT documents a value of 2 as
+// conjugating the kernel instead, but no version of VkFFT vendored here
+// generates code for it, so 2 behaves as 0.
+//
+// coordinate_features stacks independent components inside one plan: the buffer
+// holds coordinate_features contiguous copies of the whole transform layout,
+// component c multiplied by component c of the kernel. number_kernels stacks
+// kernels the other way: one input is convolved against number_kernels of them
+// and the output buffer holds number_kernels copies of the layout. The kernel
+// buffer then holds number_kernels * coordinate_features copies, which is what
+// a kernel plan with number_batches = number_kernels writes.
+//
+// perform_convolution excludes make_forward_only and make_inverse_only. The
+// pipeline is forward, multiply, inverse, so a convolution plan needs both
+// halves even though the caller only ever executes it in the forward
+// direction. Building one half leaves the other plan unallocated and VkFFT
+// dereferences it during the append rather than reporting anything, so
+// vkfft_create refuses the combination with
+// VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT. A kernel_convolution plan is an
+// ordinary forward transform and make_forward_only is the right thing to set
+// on it.
+//
+// VkFFT refuses a convolution plan that also omits an axis.
+//
+// Two shapes do not work. Both are upstream limitations rather than wrapper
+// ones, and VkFFT reports neither as an error.
+//
+// A convolution plan with fft_dim 1 over a length VkFFT transforms in a single
+// upload fails to compile: the generated code opens a bounds check per
+// register and never closes it. Writing the same transform as fft_dim 2 with a
+// trailing axis of length 1 is equivalent, moves the multiply onto the strided
+// code path, and works, so that is the shape to use for a 1D convolution.
+// Lengths large enough to need several uploads (roughly 8192 and up) take the
+// strided path on their own and compile as fft_dim 1.
+//
+// number_kernels above 1 needs a genuinely multi-axis transform. Combined with
+// the trailing length-1 axis of that 1D workaround it runs without error and
+// writes zeros over the whole output, so a batched-kernel convolution needs a
+// real second axis. number_kernels = 1 is unaffected, and so is
+// coordinate_features, which works on either shape.
+
+// Points a convolution plan at the buffer holding its pre-transformed kernel.
+// Returns VKFFT_SUCCESS, or VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT for a null
+// argument or an app that was not created with perform_convolution.
+//
+// `kernel` is a device buffer handle of the same kind vkfft_execute takes.
+// Like the buffer slots, the wrapper owns the storage and VkFFT reads it at
+// every dispatch, so the handle set here persists across vkfft_execute calls
+// until the next vkfft_set_kernel. It has to be set at least once before the
+// first execute, and vkfft_execute returns VKFFT_ERROR_EMPTY_kernel if it was
+// not. Nothing about the buffer is copied, so it must stay alive and hold the
+// transformed kernel for as long as the plan is used.
+int vkfft_set_kernel(vkfft_app* app, void* kernel);
+
+// Hands back the compiled kernel binaries of a plan created with
+// save_to_string = 1, for later reuse through vkfft_create_loaded. Returns
+// VKFFT_SUCCESS and writes *data and *size on success.
+//
+// The bytes belong to VkFFT, not the caller. They are allocated during
+// vkfft_create and freed by vkfft_destroy, and nothing else in the lifetime of
+// the app touches them, so the pointer is valid until vkfft_destroy and must
+// not be freed. A caller that wants them to outlive the app copies `size`
+// bytes out. The blob carries its own length in its first eight bytes, so
+// *size is the whole of it and the same value must come back to
+// vkfft_create_loaded.
+//
+// Returns VKFFT_ERROR_EMPTY_applicationString if the plan was not created with
+// save_to_string, and VKFFT_WRAPPER_ERROR_UNSUPPORTED on Metal, where VkFFT
+// compiles the save path out.
+int vkfft_save(vkfft_app* app, const char** data, uint64_t* size);
+
+// vkfft_create with the compiled binaries supplied instead of generated. Same
+// arguments and same result codes, plus `data` and `size` from an earlier
+// vkfft_save. Skipping the compile is the entire point, so expect this to
+// return far faster than vkfft_create on the same config.
+//
+// `config` must describe the same plan the binaries were saved from, down to
+// the tuning fields, since VkFFT lays the blob out in the order that config
+// generates kernels in and reads it back positionally with no cross-check. It
+// must have save_to_string = 0: VkFFT rejects loading and saving at once. The
+// binaries are device-specific and VkFFT-version-specific, and neither is
+// checked here or in VkFFT, so a stale or foreign blob fails in whatever way
+// the driver fails to load it.
+//
+// The wrapper checks `size` against the length the blob claims and returns
+// VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT if the buffer is too short, since VkFFT
+// itself reads the blob purely by that internal length. `data` is read during
+// this call only and is not retained, so it can be freed as soon as the call
+// returns. On Metal this returns VKFFT_WRAPPER_ERROR_UNSUPPORTED.
+int vkfft_create_loaded(const vkfft_config* config, void** device_handles, const char* data, uint64_t size, vkfft_app** out);
 
 // Creates a VkFFT application. Returns VKFFT_SUCCESS and writes *out on
 // success. On failure, it returns the VkFFTResult (or
@@ -142,6 +266,12 @@ uint64_t vkfft_max_dims(void);
 
 // The VKFFT_BACKEND baked into this library: 1 CUDA, 3 OpenCL, 5 Metal.
 uint64_t vkfft_backend(void);
+
+// sizeof(vkfft_config) as this library reads it. A caller compares it against
+// its own mirror to catch a mirror that stops short of the fields the wrapper
+// reads, which no other check can see: the struct only grows at the end, so a
+// short mirror keeps every offset valid and fails silently.
+uint64_t vkfft_config_size(void);
 
 #ifdef __cplusplus
 }

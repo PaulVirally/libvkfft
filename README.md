@@ -10,13 +10,17 @@ The backend in VkFFT is specified at compile-time and changes struct layouts, so
 one shared library per backend is unavoidable. This wrapper is built to be
 generic for all backends, and thus `include/vkfft_wrapper.h` and
 `src/vkfft_wrapper.cpp` are compiled three times with different `VKFFT_BACKEND`
-values. Every build exports the same six symbols with the same signatures:
+values. Every build exports the same ten symbols with the same signatures:
 
 - `vkfft_create`: create a plan
+- `vkfft_create_loaded`: create a plan from binaries saved by `vkfft_save`
 - `vkfft_execute`: execute a plan
+- `vkfft_set_kernel`: point a convolution plan at its pre-transformed kernel
+- `vkfft_save`: get the compiled kernel binaries of a plan built with `save_to_string`
 - `vkfft_destroy`: destroy a plan
 - `vkfft_error_name`: get a string for an error code
 - `vkfft_max_dims`: get the maximum number of FFT dimensions (set to 12 by default)
+- `vkfft_config_size`: get `sizeof(vkfft_config)`, so a mirror can check its ABI
 - `vkfft_backend`: get the backend the library was built for (1=CUDA, 3=OpenCL, 5=Metal)
 
 ## Vendored VkFFT

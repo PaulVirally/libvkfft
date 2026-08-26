@@ -5,6 +5,7 @@
 #include "vkfft_wrapper.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "vkFFT.h"
 
@@ -31,6 +32,7 @@ struct vkfft_app {
     VkFFTApplication app; // must be first: vkfft_create zeroes it
     buffer_handle buffer;
     buffer_handle input_buffer;
+    buffer_handle kernel_buffer; // convolution only, rewritten by vkfft_set_kernel
 #if (VKFFT_BACKEND == 1)
     CUdevice device;
     stream_handle stream;
@@ -42,11 +44,50 @@ struct vkfft_app {
 #endif
 };
 
-int vkfft_create(const vkfft_config* const config, void** const device_handles, vkfft_app** const out) {
+// The whole of vkfft_create and vkfft_create_loaded. `data` is null for the
+// former and the saved binaries for the latter, which is the only difference
+// between them.
+static int create_app(const vkfft_config* const config, void** const device_handles, const char* const data, const uint64_t size, vkfft_app** const out) {
     if ((config == nullptr) || (device_handles == nullptr) || (out == nullptr)) {
         return VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT;
     }
     *out = nullptr;
+
+#if (VKFFT_BACKEND == 5)
+    // VkFFT compiles both halves of the binary cache out on Metal: the save
+    // branch of its compile step is empty and it never copies the load pointer
+    // into its own configuration. Requesting either would fail obscurely (a
+    // load reports an empty application string even though one was given, a
+    // save silently produces nothing and leaks the buffer it allocated for it),
+    // so both are refused here instead.
+    if ((config->save_to_string != 0) || (data != nullptr)) {
+        return VKFFT_WRAPPER_ERROR_UNSUPPORTED;
+    }
+#endif
+
+    // A convolution plan runs a forward transform, the kernel multiply, then
+    // an inverse transform, so it needs both halves even though it is only
+    // ever executed in the forward direction. Asking for one half leaves the
+    // other plan unallocated and VkFFTAppend dereferences it, which is a crash
+    // rather than a result code, so the combination is refused here.
+    if ((config->perform_convolution != 0) && ((config->make_forward_only != 0) || (config->make_inverse_only != 0))) {
+        return VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT;
+    }
+
+    // VkFFT reads the blob positionally and takes its length from the first
+    // eight bytes rather than from anything the caller passes, so a truncated
+    // buffer would be read past the end. This is the one thing about it the
+    // wrapper can check.
+    if (data != nullptr) {
+        uint64_t claimed = 0;
+        if (size < 5 * sizeof(uint64_t)) { // 5: VkFFT's blob opens with a five-word header (total size in word 0, the Rader offset in word 2) that it reads before any other check.
+            return VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT;
+        }
+        memcpy(&claimed, data, sizeof(uint64_t));
+        if (claimed > size) {
+            return VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT;
+        }
+    }
 
     // initializeVkFFT memcmps the whole VkFFTApplication against zero,
     // padding included, so calloc rather than new as it is the only
@@ -88,6 +129,32 @@ int vkfft_create(const vkfft_config* const config, void** const device_handles, 
     vk.coalescedMemory = config->coalesced_memory;
     vk.aimThreads = config->aim_threads;
     vk.numSharedBanks = config->num_shared_banks;
+
+    // Convolution. VkFFT reads coordinateFeatures on every plan but the rest
+    // only when performConvolution is set, and copying them unconditionally
+    // matches that: a kernel plan takes whatever the caller gives it and the
+    // ignored fields stay ignored.
+    vk.coordinateFeatures = config->coordinate_features;
+    vk.numberKernels = config->number_kernels;
+    vk.performConvolution = static_cast<pfUINT>(config->perform_convolution);
+    vk.kernelConvolution = static_cast<pfUINT>(config->kernel_convolution);
+    vk.conjugateConvolution = static_cast<pfUINT>(config->conjugate_convolution);
+    if (config->perform_convolution != 0) {
+        // Same arrangement as the buffer slots: VkFFT keeps the address and
+        // reads through it at every dispatch, so vkfft_set_kernel only has to
+        // write the slot. kernelSize is left null for the same reason
+        // bufferSize is, and kernelNum stays at VkFFT's default of one.
+        vk.kernel = &self->kernel_buffer;
+    }
+
+    // Binary cache. Both flags have to be in place before initializeVkFFT
+    // since that is where kernels are compiled and where the blob is
+    // assembled. VkFFT rejects the two together itself.
+    vk.saveApplicationToString = static_cast<pfUINT>(config->save_to_string);
+    if (data != nullptr) {
+        vk.loadApplicationFromString = 1;
+        vk.loadApplicationString = const_cast<char*>(data); // read during initializeVkFFT and not retained
+    }
 
     // Out-of-place is expressed as isInputFormatted: VkFFT reads the first
     // axis from inputBuffer and leaves the result in buffer. Setting
@@ -140,6 +207,50 @@ int vkfft_create(const vkfft_config* const config, void** const device_handles, 
     return VKFFT_SUCCESS;
 }
 
+int vkfft_create(const vkfft_config* const config, void** const device_handles, vkfft_app** const out) {
+    return create_app(config, device_handles, nullptr, 0, out);
+}
+
+int vkfft_create_loaded(const vkfft_config* const config, void** const device_handles, const char* const data,
+                        const uint64_t size, vkfft_app** const out) {
+    if (data == nullptr) {
+        return VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT;
+    }
+    return create_app(config, device_handles, data, size, out);
+}
+
+int vkfft_set_kernel(vkfft_app* const self, void* const kernel) {
+    if ((self == nullptr) || (kernel == nullptr)) {
+        return VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT;
+    }
+    if (self->app.configuration.performConvolution == 0) {
+        return VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT; // nothing reads the slot on a plan that does no convolution
+    }
+    self->kernel_buffer = static_cast<buffer_handle>(kernel);
+    return VKFFT_SUCCESS;
+}
+
+int vkfft_save(vkfft_app* const self, const char** const data, uint64_t* const size) {
+    if ((self == nullptr) || (data == nullptr) || (size == nullptr)) {
+        return VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT;
+    }
+    *data = nullptr;
+    *size = 0;
+
+#if (VKFFT_BACKEND == 5)
+    return VKFFT_WRAPPER_ERROR_UNSUPPORTED;
+#else
+    if (self->app.saveApplicationString == nullptr) {
+        return VKFFT_ERROR_EMPTY_applicationString; // the plan was not created with save_to_string
+    }
+    // Borrowed, not copied. deleteVkFFT frees it, so it lives exactly as long
+    // as the app does.
+    *data = static_cast<const char*>(self->app.saveApplicationString);
+    *size = static_cast<uint64_t>(self->app.applicationStringSize);
+    return VKFFT_SUCCESS;
+#endif
+}
+
 int vkfft_execute(vkfft_app* const self, void* const in, void* const out, const int direction, void* const stream) {
     if (self == nullptr) {
         return VKFFT_ERROR_EMPTY_app;
@@ -151,6 +262,11 @@ int vkfft_execute(vkfft_app* const self, void* const in, void* const out, const 
     const bool out_of_place = (self->app.configuration.isInputFormatted != 0);
     if (out_of_place && (in == nullptr)) {
         return VKFFT_ERROR_EMPTY_inputBuffer;
+    }
+    // VkFFT only checks that the slot exists, not that anything was put in it,
+    // and an empty slot reaches the driver as a null buffer argument.
+    if ((self->app.configuration.performConvolution != 0) && (self->kernel_buffer == buffer_handle())) {
+        return VKFFT_ERROR_EMPTY_kernel;
     }
 
     // VkFFT normally treats inputBuffer as the source of both directions, so
@@ -224,6 +340,9 @@ const char* vkfft_error_name(const int res) {
     if (res == VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT) {
         return "VKFFT_WRAPPER_ERROR_INVALID_ARGUMENT";
     }
+    if (res == VKFFT_WRAPPER_ERROR_UNSUPPORTED) {
+        return "VKFFT_WRAPPER_ERROR_UNSUPPORTED";
+    }
     return getVkFFTErrorString(static_cast<VkFFTResult>(res));
 }
 
@@ -233,4 +352,8 @@ uint64_t vkfft_max_dims(void) {
 
 uint64_t vkfft_backend(void) {
     return static_cast<uint64_t>(VKFFT_BACKEND);
+}
+
+uint64_t vkfft_config_size(void) {
+    return static_cast<uint64_t>(sizeof(vkfft_config));
 }
