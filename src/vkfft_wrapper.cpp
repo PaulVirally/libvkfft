@@ -357,3 +357,13 @@ uint64_t vkfft_backend(void) {
 uint64_t vkfft_config_size(void) {
     return static_cast<uint64_t>(sizeof(vkfft_config));
 }
+
+const char* vkfft_cuda_toolkit_root(void) {
+#ifdef CUDA_TOOLKIT_ROOT_DIR
+    // On a CUDA build vkFFT.h defines this itself when the build system did
+    // not, so the empty string arrives here rather than an undefined macro.
+    return CUDA_TOOLKIT_ROOT_DIR;
+#else
+    return ""; // no CUDA in this build, so there is no root to report
+#endif
+}

@@ -273,6 +273,24 @@ uint64_t vkfft_backend(void);
 // short mirror keeps every offset valid and fails silently.
 uint64_t vkfft_config_size(void);
 
+// The CUDA_TOOLKIT_ROOT_DIR this library was compiled with. Never NULL, and
+// empty when nothing was baked in, which is every OpenCL and Metal build and a
+// CUDA build whose toolkit root was left unset. The returned pointer is a
+// static string owned by the library, so the caller must not free it and it
+// stays valid for the lifetime of the process.
+//
+// An empty value means half precision cannot compile on this build. VkFFT
+// generates its half-precision CUDA kernels with an
+// #include <ROOT/include/cuda_fp16.h> assembled from this macro, and it hands
+// nvrtc no header list and no -I of its own, so an empty root leaves the
+// generated source including </include/cuda_fp16.h> and the compile fails after
+// VkFFT has dumped the whole kernel to stdout. Callers check this before
+// planning a half-precision transform on CUDA rather than after.
+//
+// Additive: this symbol changes no struct, so vkfft_config_size and the mirror
+// check built on it are unaffected.
+const char* vkfft_cuda_toolkit_root(void);
+
 #ifdef __cplusplus
 }
 #endif
