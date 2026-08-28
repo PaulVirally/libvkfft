@@ -76,6 +76,10 @@ if(VKFFT_BACKEND EQUAL 1)
     set(VKFFT_CUDA_TOOLKIT_ROOT_DIR "${vkfft_cuda_root}" CACHE STRING "Path baked into generated fp16 CUDA kernels")
     target_compile_definitions(vkfft PRIVATE CUDA_TOOLKIT_ROOT_DIR="${VKFFT_CUDA_TOOLKIT_ROOT_DIR}")
 elseif(VKFFT_BACKEND EQUAL 3)
+    # cl_version.h picks 300 on its own and says so in a #pragma message every
+    # build. Saying it here makes the API level the wrapper compiles against a
+    # choice rather than a default, at the same value.
+    target_compile_definitions(vkfft PRIVATE CL_TARGET_OPENCL_VERSION=300)
     if(APPLE AND NOT VKFFT_OPENCL_FORCE_ICD_LOADER)
         target_link_libraries(vkfft PRIVATE "-framework OpenCL")
         target_compile_definitions(vkfft PRIVATE CL_SILENCE_DEPRECATION)
@@ -105,7 +109,7 @@ if(VKFFT_WRAPPER_BUILD_TESTS AND VKFFT_BACKEND EQUAL 3)
     target_link_libraries(vkfft_quick_test PRIVATE vkfft)
     # The test mirrors vkfft_config, so it must see the same array length as
     # the library.
-    target_compile_definitions(vkfft_quick_test PRIVATE VKFFT_MAX_FFT_DIMENSIONS=${VKFFT_MAX_FFT_DIMENSIONS})
+    target_compile_definitions(vkfft_quick_test PRIVATE VKFFT_MAX_FFT_DIMENSIONS=${VKFFT_MAX_FFT_DIMENSIONS} CL_TARGET_OPENCL_VERSION=300)
     if(APPLE AND NOT VKFFT_OPENCL_FORCE_ICD_LOADER)
         target_link_libraries(vkfft_quick_test PRIVATE "-framework OpenCL")
         target_compile_definitions(vkfft_quick_test PRIVATE CL_SILENCE_DEPRECATION)
