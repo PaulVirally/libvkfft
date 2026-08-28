@@ -9,6 +9,19 @@
 
 #include "vkFFT.h"
 
+// vkFFT.h pulls in CL/cl_platform.h, which includes altivec.h on any target
+// that has AltiVec. GCC's altivec.h defines bool, vector and pixel as macros
+// for its own vector keywords, which turns the plain bool declarations in
+// vkfft_execute into vector types and breaks the powerpc64le build. That
+// header is written to be undone this way. All three macros go out together
+// because they come in together, and leaving one behind would catch out the
+// next declaration written here.
+#if defined(__VEC__)
+#undef bool
+#undef vector
+#undef pixel
+#endif
+
 #if (VKFFT_BACKEND == 1)
 typedef void* buffer_handle; // CUDA device pointer
 typedef cudaStream_t stream_handle;
