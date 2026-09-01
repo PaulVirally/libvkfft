@@ -50,7 +50,7 @@ jobs:
     steps:
       # CMakeLists.txt fails when lib/VkFFT/vkFFT/vkFFT.h is missing, so the
       # checkout has to bring the pinned submodule.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -96,7 +96,7 @@ jobs:
     name: CUDA backend 1, compile only
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -141,7 +141,7 @@ jobs:
     steps:
       # metal-cpp ships inside the VkFFT checkout at lib/VkFFT/metal-cpp, and
       # CMakeLists.txt checks for it before configuring.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
