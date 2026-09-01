@@ -1,17 +1,15 @@
-# Keeps the action versions used by the workflows in .github/workflows from
-# rotting. Monthly is often enough, since these workflows reference a handful
-# of actions and none of them moves fast. A stale action then shows up as a
-# pull request instead of as a confusing failure six months from now, when
-# nobody remembers what changed.
+# Keeps the action versions used by .github/workflows current. Monthly is
+# often enough, since these workflows reference a handful of actions and none
+# of them moves fast. An outdated action then arrives as a pull request rather
+# than as a confusing failure months later.
 #
-# Only the github-actions ecosystem is enabled. Julia dependencies are
-# CompatHelper's job (.github/workflows/CompatHelper.yml) and Dependabot does
-# not understand Project.toml.
+# Only the github-actions ecosystem is enabled. This repository has no other
+# manifest Dependabot understands.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
-    # "/" means .github/workflows, not the repository root. This is
-    # Dependabot's convention for the github-actions ecosystem.
+    # For github-actions, "/" means .github/workflows, not the repository
+    # root.
     directory: "/"
     schedule:
       interval: "monthly"

@@ -1,26 +1,24 @@
 # Creates the GitHub release for a pushed tag.
 #
-# What the release is for. The three Yggdrasil recipes fetch this repository as
-# an ArchiveSource pointing at
-# https://github.com/PaulVirally/libvkfft/archive/refs/tags/<tag>.tar.gz. That
-# source tarball is the artifact Yggdrasil consumes, GitHub generates it from
-# the tag itself, and it is served whether or not a release object exists.
+# The three Yggdrasil recipes fetch this repository as an ArchiveSource at
+# https://github.com/PaulVirally/libvkfft/archive/refs/tags/<tag>.tar.gz.
+# GitHub generates that tarball from the tag and serves it whether or not a
+# release object exists, so the release adds only the notes.
 #
-# Binaries ship only through VkFFT_OpenCL_jll, VkFFT_CUDA_jll and
-# VkFFT_Metal_jll. Do not attach a built library here. It would be a second
-# copy of the same code with none of the auditing the JLL route applies, and
-# the two would drift.
+# Binaries ship through VkFFT_OpenCL_jll, VkFFT_CUDA_jll and VkFFT_Metal_jll.
+# Do not attach a built library here. It would duplicate the JLL builds
+# without their auditing and would drift from them.
 #
-# This workflow does not wait for CI.yml to go green on the tagged commit.
+# This workflow does not wait for CI.yml to pass on the tagged commit.
 name: Release
 
 on:
   push:
     tags:
       - "v*"
-  # The manual fallback, for a tag that was pushed before this workflow existed
-  # or whose run failed for a reason unrelated to the tag. Start it from the
-  # tag, not from a branch.
+  # Manual fallback for a tag pushed before this workflow existed, or whose
+  # run failed for a reason unrelated to the tag. Start it from the tag, not
+  # from a branch.
   workflow_dispatch:
 
 permissions:
@@ -31,11 +29,10 @@ jobs:
     name: Create the GitHub release
     runs-on: ubuntu-latest
     steps:
-      # No checkout step and no action reference. The gh CLI is preinstalled on
-      # the GitHub-hosted Ubuntu image, it wants a repository name and a token
-      # rather than a working tree, and GitHub writes the release notes from
-      # the tag's history on its own side. So there is nothing here for
-      # Dependabot to update.
+      # No checkout and no action reference. The gh CLI is preinstalled on the
+      # hosted Ubuntu image and needs a repository name and a token rather
+      # than a working tree, and GitHub generates the notes from the tag's
+      # history. So there is nothing here for Dependabot to update.
       - name: Create the release for the pushed tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

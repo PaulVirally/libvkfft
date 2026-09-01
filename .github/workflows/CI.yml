@@ -1,26 +1,17 @@
-# The compile matrix for the wrapper. Its job is to catch a compile break in
-# src/vkfft_wrapper.cpp or in the CMake logic
+# Compile matrix for the wrapper. It catches build breaks in
+# src/vkfft_wrapper.cpp and in the CMake logic.
 #
-# This is compile only, no device involved, so a green run says the code builds
-# and links and nothing more:
-#   - the CUDA job (backend 1). It links libcuda, libnvrtc and libcudart and
-#     compiles no device code, since VkFFT emits CUDA source and hands it to
-#     nvrtc at runtime, so a runner with no GPU builds it fine and can never
-#     run it.
-#   - the Metal job (backend 5). Its quick_test_metal executable is built and
-#     deliberately never run, because whether a hosted macOS arm64 runner
-#     exposes a usable Metal device is an open question and not one this
-#     workflow should answer by accident.
+# The CUDA (backend 1) and Metal (backend 5) jobs compile and link only. VkFFT
+# emits CUDA source and hands it to nvrtc at runtime, so backend 1 builds on a
+# runner with no GPU. The Metal executable is built but not run, because a
+# hosted macOS runner is not guaranteed to expose a usable Metal device.
 #
-# Actually executes transforms:
-#   - the two OpenCL jobs (backend 3), because pocl gives a CPU OpenCL device
-#     that needs no GPU hardware at all. The quick_test there runs c2c, r2c,
-#     fused convolution and a plan save and reload against a reference DFT.
-#     This is the only place in the matrix where a number is checked.
-#
-# So a green matrix is not evidence that the CUDA or the Metal transforms work.
-# The gates for those stay the manual test/cuda run and the local Metal suite in
-# VkFFT.jl.
+# The OpenCL jobs (backend 3) run transforms on pocl's CPU device, which needs
+# no GPU hardware. quick_test there covers c2c, r2c, fused convolution and a
+# plan save and reload against a reference DFT. It is the only job in the
+# matrix that checks a numeric result, so a green matrix says nothing about the
+# CUDA or Metal transforms. Those are checked by hand with the VkFFT.jl
+# test/cuda run and the local Metal suite.
 name: CI
 
 on:
@@ -36,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  # A second push to a branch makes the first run's answer uninteresting.
+  # A newer push cancels an in-flight run on the same ref, except on main.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
@@ -45,8 +36,8 @@ jobs:
     name: OpenCL backend 3, ${{ matrix.compiler }}
     runs-on: ubuntu-24.04
     strategy:
-      # One compiler failing says nothing about the other, and knowing both
-      # answers in one run beats bisecting across two.
+      # Report both compilers in one run instead of stopping at the first
+      # failure.
       fail-fast: false
       matrix:
         include:
@@ -57,19 +48,16 @@ jobs:
             cc: clang
             cxx: clang++
     steps:
-      # VkFFT is a pinned submodule at lib/VkFFT and CMakeLists.txt fails
-      # outright when lib/VkFFT/vkFFT/vkFFT.h is missing, so the checkout has
-      # to bring it. VkFFT itself declares no submodules today, and recursive
-      # costs nothing if that ever changes.
+      # CMakeLists.txt fails when lib/VkFFT/vkFFT/vkFFT.h is missing, so the
+      # checkout has to bring the pinned submodule.
       - uses: actions/checkout@v5
         with:
           submodules: recursive
 
-      # opencl-headers supplies CL/cl.h, ocl-icd-opencl-dev supplies the
-      # libOpenCL.so that find_package(OpenCL) links against, and
-      # pocl-opencl-icd supplies the CPU device that makes quick_test runnable.
-      # clinfo is here so a device problem is visible in the log rather than
-      # inferred from a failing test.
+      # opencl-headers supplies CL/cl.h, ocl-icd-opencl-dev the libOpenCL.so
+      # that find_package(OpenCL) links against, and pocl-opencl-icd the CPU
+      # device that makes quick_test runnable. clinfo makes a missing device
+      # visible in the log.
       - name: Install the OpenCL headers, an ICD loader and pocl
         run: |
           set -o pipefail
@@ -97,8 +85,8 @@ jobs:
           set -o pipefail
           cmake --build build --parallel
 
-      # The one step in this workflow that computes a transform and checks the
-      # result. It runs on pocl's CPU device.
+      # The only step in this workflow that computes a transform and checks
+      # the result. It runs on pocl's CPU device.
       - name: Run quick_test on the pocl device
         run: |
           set -o pipefail
@@ -112,11 +100,10 @@ jobs:
         with:
           submodules: recursive
 
-      # The toolkit comes from a pinned action rather than from apt, because
-      # the distribution packages lag and the version actually used matters for
-      # the headers the wrapper compiles against. method local runs the NVIDIA
-      # runfile with --toolkit, so no driver is installed and no reboot is
-      # needed, which is what makes this work on a runner with no GPU.
+      # A pinned action rather than apt, because the distribution packages lag
+      # and the toolkit version fixes the headers the wrapper compiles
+      # against. method local runs the NVIDIA runfile with --toolkit, which
+      # installs no driver and needs no reboot.
       - uses: Jimver/cuda-toolkit@v0.2.36
         id: cuda-toolkit
         with:
@@ -131,20 +118,18 @@ jobs:
           echo "CUDA_PATH is ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
           nvcc --version
 
-      # find_package(CUDAToolkit) needs nvcc on PATH, which the action puts
-      # there. The fallback path in CMakeLists.txt, the one Yggdrasil takes,
-      # is not what runs here.
+      # find_package(CUDAToolkit) needs nvcc on PATH, which the action
+      # provides. The CMakeLists.txt fallback that Yggdrasil takes is not
+      # exercised here.
       - name: Configure
         run: |
           set -o pipefail
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVKFFT_BACKEND=1
 
-      # There is no test target for backend 1 in CMakeLists.txt, and there
-      # could not be a useful one without a device. This job ends at the link.
-      #
-      # Nothing built here is uploaded, and nothing built here should be. The
-      # backend 1 build bakes CUDA_TOOLKIT_ROOT_DIR into the fp16 kernels it
-      # will generate, and the path it bakes is this runner's.
+      # CMakeLists.txt defines no test target for backend 1, so this job ends
+      # at the link. Do not upload what it builds. The backend 1 build bakes
+      # this runner's CUDA_TOOLKIT_ROOT_DIR into the fp16 kernels it
+      # generates.
       - name: Build
         run: |
           set -o pipefail
@@ -154,9 +139,8 @@ jobs:
     name: Metal backend 5, compile only
     runs-on: macos-15
     steps:
-      # metal-cpp ships inside the VkFFT checkout at lib/VkFFT/metal-cpp and
-      # CMakeLists.txt checks for it by hand, so this job needs the submodule
-      # for two separate reasons.
+      # metal-cpp ships inside the VkFFT checkout at lib/VkFFT/metal-cpp, and
+      # CMakeLists.txt checks for it before configuring.
       - uses: actions/checkout@v5
         with:
           submodules: recursive
@@ -173,8 +157,8 @@ jobs:
           set -o pipefail
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVKFFT_BACKEND=5
 
-      # This builds vkfft_quick_test_metal as well, which is a compile check on
-      # the Metal example code. It is not run.
+      # This also builds vkfft_quick_test_metal, a compile check on the Metal
+      # example code. It is not run.
       - name: Build
         run: |
           set -o pipefail
