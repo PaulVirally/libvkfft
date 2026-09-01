@@ -1,0 +1,66 @@
+# Creates the GitHub release for a pushed tag.
+#
+# What the release is for. The three Yggdrasil recipes fetch this repository as
+# an ArchiveSource pointing at
+# https://github.com/PaulVirally/libvkfft/archive/refs/tags/<tag>.tar.gz. That
+# source tarball is the artifact Yggdrasil consumes, GitHub generates it from
+# the tag itself, and it is served whether or not a release object exists.
+#
+# Binaries ship only through VkFFT_OpenCL_jll, VkFFT_CUDA_jll and
+# VkFFT_Metal_jll. Do not attach a built library here. It would be a second
+# copy of the same code with none of the auditing the JLL route applies, and
+# the two would drift.
+#
+# This workflow does not wait for CI.yml to go green on the tagged commit.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  # The manual fallback, for a tag that was pushed before this workflow existed
+  # or whose run failed for a reason unrelated to the tag. Start it from the
+  # tag, not from a branch.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create the GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      # No checkout step and no action reference. The gh CLI is preinstalled on
+      # the GitHub-hosted Ubuntu image, it wants a repository name and a token
+      # rather than a working tree, and GitHub writes the release notes from
+      # the tag's history on its own side. So there is nothing here for
+      # Dependabot to update.
+      - name: Create the release for the pushed tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -o pipefail
+
+          # workflow_dispatch can be started from a branch, where ref_name is a
+          # branch name and creating a release from it would be wrong.
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            echo "::error::${GITHUB_REF} is not a tag. Run this on a tag."
+            exit 1
+          fi
+
+          # Re-running the manual fallback on a tag that already has a release
+          # should do nothing rather than fail.
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            echo "${TAG} already has a release. Leaving it alone."
+            exit 0
+          fi
+
+          # --verify-tag makes gh refuse a tag that does not exist on the
+          # remote instead of creating one
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --verify-tag \
+            --generate-notes
