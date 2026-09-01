@@ -1016,23 +1016,17 @@ int main(void) {
     }
 
     // A convolution plan with fft_dim 1 over a size VkFFT transforms in one
-    // upload does not compile: its generated code opens a bounds check per
-    // register without ever closing it, and the driver rejects the source.
-    // Writing the same transform as fft_dim 2 with a trailing axis of length 1
-    // moves the convolution onto the strided code path, which is correct, so
-    // that is the shape the 1D cases below use. Everything from roughly 8192
-    // upward compiles as fft_dim 1 because it needs several uploads and takes
-    // the same strided path. This probe records what the vendored VkFFT
-    // actually does rather than asserting it, so a fixed upstream shows up as
-    // a changed line and not as a failure.
-    vkfft_config probe_config = {0};
-    probe_config.fft_dim = 1;
-    probe_config.size[0] = 64;
-    probe_config.perform_convolution = 1;
-    vkfft_app* probe_app = NULL;
-    res = vkfft_create(&probe_config, device_handles, &probe_app);
-    printf("note: fft_dim 1 single-upload convolution returns %s\n", vkfft_error_name(res));
-    vkfft_destroy(probe_app);
+    // upload is unsupported, and it must never reach vkfft_create at all, not
+    // even to observe the code that comes back. On some devices VkFFT's
+    // convolution codegen divides by zero while it generates the kernel,
+    // before it gets as far as rejecting the shape itself, and the process
+    // dies (SIGFPE under pocl 5.0). Whether it crashes or returns an error
+    // depends on the decomposition the device picks, so one machine returning
+    // an error says nothing about the next. Writing the same transform as
+    // fft_dim 2 with a trailing axis of length 1 moves the convolution onto
+    // the strided code path, which is correct, so that is the shape the 1D
+    // cases below use. Everything from roughly 8192 upward is safe as fft_dim
+    // 1 because it needs several uploads and takes the same strided path.
 
     // Fused convolution. Each case builds its own kernel plan, transforms the
     // kernel on the device, and runs the convolution plan against it.
