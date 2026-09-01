@@ -17,10 +17,17 @@
 #ifdef __APPLE__
 #include <OpenCL/opencl.h>
 #else
+// Apple has no clCreateCommandQueueWithProperties, so the 1.2 call stays.
+#define CL_USE_DEPRECATED_OPENCL_1_2_APIS
 #include <CL/cl.h>
 #endif
 
 #include "vkfft_wrapper.h"
+
+// Strict C11 on glibc does not define M_PI.
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #define FFT_SIZE 64
 #define TOLERANCE 1e-5 // on values normalized by FFT_SIZE, so this is a relative bound
